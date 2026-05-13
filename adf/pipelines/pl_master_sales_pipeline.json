@@ -1,0 +1,141 @@
+{
+    "name": "pl_master_sales_pipeline",
+    "properties": {
+        "description": "Master orchestration pipeline: ingest orders → Bronze → Silver → Gold → notify",
+        "activities": [
+            {
+                "name": "Get Pipeline Config",
+                "type": "Lookup",
+                "dependsOn": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": "SELECT * FROM dbo.pipeline_config WHERE pipeline_name = 'sales_orders' AND is_active = 1"
+                    },
+                    "dataset": { "referenceName": "ds_sql_pipeline_config", "type": "DatasetReference" },
+                    "firstRowOnly": true
+                }
+            },
+            {
+                "name": "Ingest Orders from API",
+                "type": "Copy",
+                "dependsOn": [{ "activity": "Get Pipeline Config", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "source": {
+                        "type": "RestSource",
+                        "httpRequestTimeout": "00:05:00",
+                        "requestInterval": "00.00:00:00.010",
+                        "requestMethod": "GET",
+                        "paginationRules": {
+                            "AbsoluteUrl": "$.next_page_url"
+                        },
+                        "additionalHeaders": {
+                            "Authorization": {
+                                "type": "AzureKeyVaultSecret",
+                                "store": { "referenceName": "ls_keyvault", "type": "LinkedServiceReference" },
+                                "secretName": "api-bearer-token"
+                            }
+                        }
+                    },
+                    "sink": {
+                        "type": "ParquetSink",
+                        "storeSettings": {
+                            "type": "AzureBlobFSWriteSettings",
+                            "copyBehavior": "FlattenHierarchy"
+                        }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                        "type": "TabularTranslator",
+                        "mappings": [
+                            { "source": { "path": "$['order_id']" },         "sink": { "name": "order_id" } },
+                            { "source": { "path": "$['customer_id']" },      "sink": { "name": "customer_id" } },
+                            { "source": { "path": "$['product_id']" },       "sink": { "name": "product_id" } },
+                            { "source": { "path": "$['product_category']" }, "sink": { "name": "product_category" } },
+                            { "source": { "path": "$['order_date']" },       "sink": { "name": "order_date" } },
+                            { "source": { "path": "$['order_amount']" },     "sink": { "name": "order_amount" } },
+                            { "source": { "path": "$['quantity']" },         "sink": { "name": "quantity" } },
+                            { "source": { "path": "$['region']" },           "sink": { "name": "region" } },
+                            { "source": { "path": "$['status']" },           "sink": { "name": "status" } },
+                            { "source": { "path": "$['last_modified']" },    "sink": { "name": "last_modified" } }
+                        ]
+                    }
+                },
+                "inputs":  [{ "referenceName": "ds_rest_orders_api",  "type": "DatasetReference" }],
+                "outputs": [{ "referenceName": "ds_adls_raw_orders",  "type": "DatasetReference",
+                              "parameters": { "folder_date": "@formatDateTime(utcNow(), 'yyyy/MM/dd')" } }]
+            },
+            {
+                "name": "Bronze — Databricks",
+                "type": "DatabricksNotebook",
+                "dependsOn": [{ "activity": "Ingest Orders from API", "dependencyConditions": ["Succeeded"] }],
+                "linkedServiceName": { "referenceName": "ls_databricks", "type": "LinkedServiceReference" },
+                "typeProperties": {
+                    "notebookPath": "/Shared/pipeline/01_bronze_ingestion",
+                    "baseParameters": {
+                        "env": { "value": "@pipeline().globalParameters.environment", "type": "Expression" }
+                    }
+                }
+            },
+            {
+                "name": "Silver — Databricks",
+                "type": "DatabricksNotebook",
+                "dependsOn": [{ "activity": "Bronze — Databricks", "dependencyConditions": ["Succeeded"] }],
+                "linkedServiceName": { "referenceName": "ls_databricks", "type": "LinkedServiceReference" },
+                "typeProperties": {
+                    "notebookPath": "/Shared/pipeline/02_silver_cleansing",
+                    "baseParameters": {
+                        "env": { "value": "@pipeline().globalParameters.environment", "type": "Expression" }
+                    }
+                }
+            },
+            {
+                "name": "Gold — Databricks",
+                "type": "DatabricksNotebook",
+                "dependsOn": [{ "activity": "Silver — Databricks", "dependencyConditions": ["Succeeded"] }],
+                "linkedServiceName": { "referenceName": "ls_databricks", "type": "LinkedServiceReference" },
+                "typeProperties": {
+                    "notebookPath": "/Shared/pipeline/03_gold_aggregation",
+                    "baseParameters": {
+                        "env": { "value": "@pipeline().globalParameters.environment", "type": "Expression" }
+                    }
+                }
+            },
+            {
+                "name": "Log Success",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [{ "activity": "Gold — Databricks", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.usp_log_pipeline_run",
+                    "storedProcedureParameters": {
+                        "pipeline_name":   { "value": "pl_master_sales_pipeline", "type": "String" },
+                        "run_id":          { "value": "@pipeline().RunId",         "type": "String" },
+                        "status":          { "value": "SUCCESS",                   "type": "String" },
+                        "records_processed": { "value": "@activity('Bronze — Databricks').output.runOutput.records_ingested", "type": "Int32" }
+                    }
+                }
+            },
+            {
+                "name": "Notify on Failure",
+                "type": "WebActivity",
+                "dependsOn": [
+                    { "activity": "Bronze — Databricks", "dependencyConditions": ["Failed"] },
+                    { "activity": "Silver — Databricks", "dependencyConditions": ["Failed"] },
+                    { "activity": "Gold — Databricks",   "dependencyConditions": ["Failed"] }
+                ],
+                "typeProperties": {
+                    "url": "@pipeline().globalParameters.teams_webhook_url",
+                    "method": "POST",
+                    "body": {
+                        "text": "@concat('❌ Pipeline FAILED: pl_master_sales_pipeline | Run ID: ', pipeline().RunId, ' | Time: ', utcNow())"
+                    }
+                }
+            }
+        ],
+        "parameters": {
+            "trigger_type": { "type": "string", "defaultValue": "scheduled" }
+        },
+        "annotations": ["sales", "medallion", "daily"],
+        "concurrency": 1
+    }
+}

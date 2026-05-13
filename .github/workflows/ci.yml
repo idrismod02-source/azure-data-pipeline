@@ -1,0 +1,56 @@
+name: CI — Lint, Test & Validate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    name: Python Lint & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint with flake8
+        run: flake8 databricks/ scripts/ --max-line-length=100
+
+      - name: Format check with black
+        run: black --check databricks/ scripts/
+
+      - name: Run unit tests
+        run: pytest tests/ -v --cov=databricks --cov-report=term-missing
+
+  validate-adf:
+    name: Validate ADF Pipeline JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate JSON syntax
+        run: |
+          for f in adf/pipelines/*.json adf/datasets/*.json; do
+            python -m json.tool "$f" > /dev/null && echo "✅ $f" || exit 1
+          done
+
+  validate-bicep:
+    name: Validate Bicep Templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/CLI@v1
+
+      - name: Lint Bicep
+        run: az bicep build --file infrastructure/main.bicep

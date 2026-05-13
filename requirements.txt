@@ -1,0 +1,12 @@
+pyspark==3.5.0
+delta-spark==3.1.0
+azure-storage-blob==12.19.0
+azure-identity==1.15.0
+azure-keyvault-secrets==4.7.0
+pandas==2.1.4
+pyarrow==14.0.2
+faker==22.0.0
+pytest==7.4.4
+pytest-cov==4.1.0
+black==23.12.1
+flake8==7.0.0

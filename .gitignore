@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Secrets — NEVER commit credentials
+*.env
+.env.*
+secrets.json
+**/linkedservices/*.json
+
+# Data files (use sample data only)
+data/raw/
+data/processed/
+*.parquet
+*.delta
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Azure CLI
+.azure/
+
+# Databricks
+.databricks/
